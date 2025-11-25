@@ -1,6 +1,6 @@
 import numpy as np
 from copy import deepcopy
-from modul_split_data import KFold
+from .modul_split_data import KFold
 
 def accuracy_score(y_true, y_pred):
 
