@@ -1,3 +1,4 @@
+import uuid
 import numpy as np
 from collections import Counter
 
@@ -8,58 +9,81 @@ class Node:
         self.left = left
         self.right = right
         self.value = value
+        self.id = str(uuid.uuid4())
 
     def is_leaf_node(self):
         return self.value is not None
 
 
 class DecisionTreeClassifier:
-    def __init__(self, criterion='entropy', max_depth=100, min_samples_split=2, min_samples_leaf=1):
+    def __init__(self, criterion='entropy', max_depth=None, min_samples_split=2, 
+                 min_samples_leaf=1, random_state=None):
+
         self.criterion = criterion
-        self.max_depth = max_depth
+        self.max_depth = max_depth if max_depth is not None else 1000
         self.min_samples_split = min_samples_split
         self.min_samples_leaf = min_samples_leaf
+        self.random_state = random_state
         self.tree_ = None
         self.n_classes_ = None
         self.n_features_in_ = None
         self.feature_importances_ = None
         
-    def _calculate_entropy(self, y):
-        class_counts = np.bincount(y)
-        probabilities = class_counts[class_counts > 0] / len(y)
-        return -np.sum(probabilities * np.log2(probabilities))
-    
-    def _calculate_information_gain(self, parent, left_child, right_child):
-        weight_left = len(left_child) / len(parent)
-        weight_right = len(right_child) / len(parent)
+    def _entropy(self, y):
+        if len(y) == 0:
+            return 0.0
         
-        return self._calculate_entropy(parent) - (
-            weight_left * self._calculate_entropy(left_child) +
-            weight_right * self._calculate_entropy(right_child)
-        )
+        _, counts = np.unique(y, return_counts=True)
+        probabilities = counts / len(y)
+        
+        probabilities = probabilities[probabilities > 0]
+        
+        entropy = -np.sum(probabilities * np.log2(probabilities))
+        return entropy
     
-    def _split_data(self, X, y, feature_idx, threshold):
-        left_indices = np.where(X[:, feature_idx] <= threshold)[0]
-        right_indices = np.where(X[:, feature_idx] > threshold)[0]
-        return left_indices, right_indices
+    def _information_gain(self, parent, left_child, right_child):
+        if len(left_child) == 0 or len(right_child) == 0:
+            return 0.0
+        
+        n = len(parent)
+        n_left = len(left_child)
+        n_right = len(right_child)
+        
+        parent_entropy = self._entropy(parent)
+        weighted_child_entropy = (n_left / n) * self._entropy(left_child) + \
+                                (n_right / n) * self._entropy(right_child)
+        
+        return parent_entropy - weighted_child_entropy
     
-    def _find_best_split(self, X, y):
+    def _split(self, X, y, feature_idx, threshold):
+        left_mask = X[:, feature_idx] <= threshold
+        right_mask = ~left_mask
+        
+        return left_mask, right_mask
+    
+    def _best_split(self, X, y):
         best_gain = -1
         best_feature = None
         best_threshold = None
         
-        for feature_idx in range(X.shape[1]):
-            feature_values = X[:, feature_idx]
-            possible_thresholds = np.unique(feature_values)
+        n_features = X.shape[1]
+
+        for feature_idx in range(n_features):
+            thresholds = np.unique(X[:, feature_idx])
             
-            for threshold in possible_thresholds:
-                left_indices, right_indices = self._split_data(X, y, feature_idx, threshold)
-                
-                if len(left_indices) == 0 or len(right_indices) == 0:
+            for i in range(len(thresholds) - 1):
+                threshold = (thresholds[i] + thresholds[i + 1]) / 2.0
+
+                left_mask, right_mask = self._split(X, y, feature_idx, threshold)
+
+                if np.sum(left_mask) < self.min_samples_leaf or \
+                   np.sum(right_mask) < self.min_samples_leaf:
                     continue
                 
-                gain = self._calculate_information_gain(y, y[left_indices], y[right_indices])
-                
+                left_y = y[left_mask]
+                right_y = y[right_mask]
+                gain = self._information_gain(y, left_y, right_y)
+
                 if gain > best_gain:
                     best_gain = gain
                     best_feature = feature_idx
@@ -67,39 +91,58 @@ class DecisionTreeClassifier:
         
         return best_feature, best_threshold
     
+    def _most_common_label(self, y):
+        if len(y) == 0:
+            return 0
+        
+        counter = Counter(y)
+        most_common = counter.most_common()
+        
+        if len(most_common) == 0:
+            return 0
+        
+        max_count = most_common[0][1]
+        tied_labels = [label for label, count in most_common if count == max_count]
+        
+        return min(tied_labels)
+    
     def _build_tree(self, X, y, depth=0):
         n_samples, n_features = X.shape
         n_labels = len(np.unique(y))
         
-        if (depth >= self.max_depth or n_labels == 1 or n_samples < self.min_samples_split):
-            return Node(value=self._most_common_label(y))
+        if (depth >= self.max_depth or 
+            n_labels == 1 or 
+            n_samples < self.min_samples_split):
+            leaf_value = self._most_common_label(y)
+            return Node(value=leaf_value)
         
-        best_feature, best_threshold = self._find_best_split(X, y)
+        best_feature, best_threshold = self._best_split(X, y)
         
         if best_feature is None:
-            return Node(value=self._most_common_label(y))
+            leaf_value = self._most_common_label(y)
+            return Node(value=leaf_value)
+
+        left_mask, right_mask = self._split(X, y, best_feature, best_threshold)
         
-        left_indices, right_indices = self._split_data(X, y, best_feature, best_threshold)
-        
-        if (len(left_indices) < self.min_samples_leaf or len(right_indices) < self.min_samples_leaf):
-            return Node(value=self._most_common_label(y))
-        
-        left_child = self._build_tree(X[left_indices], y[left_indices], depth + 1)
-        right_child = self._build_tree(X[right_indices], y[right_indices], depth + 1)
+        left_child = self._build_tree(X[left_mask], y[left_mask], depth + 1)
+        right_child = self._build_tree(X[right_mask], y[right_mask], depth + 1)
         
         return Node(best_feature, best_threshold, left_child, right_child)
     
-    def _most_common_label(self, y):
-        counter = Counter(y)
-        return counter.most_common(1)[0][0]
-    
     def fit(self, X, y):
-        X = np.array(X)
-        y = np.array(y)
+        if self.random_state is not None:
+            np.random.seed(self.random_state)
+        
+        X = np.array(X, dtype=np.float64)
+        y = np.array(y, dtype=np.int64)
+
         self.n_features_in_ = X.shape[1]
         self.n_classes_ = len(np.unique(y))
-        self.tree_ = self._build_tree(X, y)
+        
+        self.tree_ = self._build_tree(X, y, depth=0)
+        
         self._calculate_feature_importances(X, y)
+        
         return self
     
     def _traverse_tree(self, x, node):
@@ -108,31 +151,39 @@ class DecisionTreeClassifier:
         
         if x[node.feature] <= node.threshold:
             return self._traverse_tree(x, node.left)
-        return self._traverse_tree(x, node.right)
+        else:
+            return self._traverse_tree(x, node.right)
     
     def predict(self, X):
-        X = np.array(X)
-        return np.array([self._traverse_tree(x, self.tree_) for x in X])
+        X = np.array(X, dtype=np.float64)
+        predictions = [self._traverse_tree(x, self.tree_) for x in X]
+        return np.array(predictions, dtype=np.int64)
     
     def _calculate_feature_importances(self, X, y):
         importances = np.zeros(self.n_features_in_)
+        total_samples = len(y)
         
-        def calculate_importance(node, X, y):
+        def traverse_and_calculate(node, X, y):
             if node.is_leaf_node():
                 return
             
-            left_indices, right_indices = self._split_data(X, y, node.feature, node.threshold)
+            left_mask, right_mask = self._split(X, y, node.feature, node.threshold)
             
-            if len(left_indices) > 0 and len(right_indices) > 0:
-                gain = self._calculate_information_gain(y, y[left_indices], y[right_indices])
-                importances[node.feature] += gain * len(y)
-            
+            if np.sum(left_mask) > 0 and np.sum(right_mask) > 0:
+                left_y = y[left_mask]
+                right_y = y[right_mask]
+                
+                gain = self._information_gain(y, left_y, right_y)
+                
+                weighted_gain = (len(y) / total_samples) * gain
+                importances[node.feature] += weighted_gain
+
             if not node.left.is_leaf_node():
-                calculate_importance(node.left, X[left_indices], y[left_indices])
+                traverse_and_calculate(node.left, X[left_mask], y[left_mask])
             if not node.right.is_leaf_node():
-                calculate_importance(node.right, X[right_indices], y[right_indices])
+                traverse_and_calculate(node.right, X[right_mask], y[right_mask])
         
-        calculate_importance(self.tree_, X, y)
+        traverse_and_calculate(self.tree_, X, y)
         
         total = np.sum(importances)
         if total > 0:
@@ -141,17 +192,19 @@ class DecisionTreeClassifier:
         self.feature_importances_ = importances
     
     def get_depth(self):
-        def _get_depth(node):
+        def _depth(node):
             if node.is_leaf_node():
                 return 0
-            return 1 + max(_get_depth(node.left), _get_depth(node.right))
-        return _get_depth(self.tree_)
+            return 1 + max(_depth(node.left), _depth(node.right))
+        
+        return _depth(self.tree_)
     
     def get_n_leaves(self):
         def _count_leaves(node):
             if node.is_leaf_node():
                 return 1
             return _count_leaves(node.left) + _count_leaves(node.right)
+        
         return _count_leaves(self.tree_)
     
     def score(self, X, y):
