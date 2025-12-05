@@ -24,19 +24,25 @@ class TreeVisualizer:
         if len(y) == 0:
             return '#ffffff'
         
-        n_classes = len(self.class_names) if self.class_names else len(np.unique(y))
-        class_counts = np.bincount(y, minlength=n_classes)
+        n_classes = len(self.class_names) if self.class_names is not None else len(np.unique(y))
         
-        dominant_class = np.argmax(class_counts)
+        if n_classes > 0:
+            class_counts = np.bincount(y, minlength=n_classes)
+            dominant_class = np.argmax(class_counts)
+        else:
+            dominant_class = 0
+        
+        colors = [
+            '#ff9999', '#66b3ff', '#99ff99', '#ffcc99', 
+            '#c2c2f0', '#ffb3e6', '#c4e17f', '#76d7c4',
+            '#f7c6c7', '#f9e79f', '#d2b4de', '#aed6f1',
+            '#e59866', '#a9dfbf', '#fad7a0', '#f5b7b1',
+            '#abebc6', '#d7bde2', '#a3e4d7', '#f9e79f'
+        ]
         
         if is_leaf:
-            if self.class_names and dominant_class < len(self.class_names):
-                class_name = self.class_names[dominant_class]
-                if class_name.lower() == 'yes':
-                    return '#c8f7c8'
-                elif class_name.lower() == 'no':
-                    return '#ffb3b3'
-            return '#f0f0f0'
+            color_idx = dominant_class % len(colors)
+            return colors[color_idx]
         else:
             return '#e6f2ff'
     
@@ -74,54 +80,47 @@ class TreeVisualizer:
         entropy = self._calculate_entropy(y)
         samples = len(y)
         
-        n_classes = len(self.class_names) if self.class_names else 2
+        n_classes = len(self.class_names) if self.class_names is not None else 2
         value = [0] * n_classes
         if samples > 0:
             value = list(np.bincount(y, minlength=n_classes))
         
         if node.is_leaf_node():
             majority_class = np.argmax(value) if samples > 0 else 0
-            class_name = self.class_names[majority_class] if self.class_names else str(majority_class)
+            class_name = self.class_names[majority_class] if self.class_names is not None else str(majority_class)
             
             text = f"entropy={entropy:.2f}\n"
             text += f"samples={samples}\n"
             text += f"class={class_name}"
-            box_width = 5.5
-            box_height = 0.65
             is_leaf = True
         else:
             feature_name = self.feature_names[node.feature] if self.feature_names else f"X[{node.feature}]"
             majority_class = np.argmax(value) if samples > 0 else 0
-            class_name = self.class_names[majority_class] if self.class_names else str(majority_class)
+            class_name = self.class_names[majority_class] if self.class_names is not None else str(majority_class)
             
-            text = f"{feature_name}<={node.threshold:.1f}\n"
+            text = f"{feature_name} <= {node.threshold:.2f}\n"
             text += f"entropy={entropy:.2f}\n"
             text += f"samples={samples}\n"
             text += f"class={class_name}"
-            box_width = 5.0
-            box_height = 0.6
             is_leaf = False
         
         box_color = self._get_node_color(y, is_leaf)
         
-        box = Rectangle(
-            (x - box_width/2, y_pos - box_height/2),
-            box_width, box_height,
-            edgecolor='#000000',
-            facecolor=box_color,
-            linewidth=1,
-            zorder=2
-        )
-        ax.add_patch(box)
+        bbox_props = dict(boxstyle="round,pad=0.5", fc=box_color, ec="black", alpha=1.0)
         
         ax.text(x, y_pos, text,
                 ha='center', va='center',
                 fontsize=fontsize,
                 fontfamily='monospace',
+                bbox=bbox_props,  
                 zorder=3)
+
     
-    def _draw_edges(self, ax, node, X, y, depth=0):
+ 
+    def _draw_edges(self, ax, node, X, y, depth=0, max_depth=None):
         if node is None or node.is_leaf_node():
+            return
+        if max_depth is not None and depth >= max_depth:
             return
         
         x_parent, y_parent = self.node_positions[node.id]
@@ -148,11 +147,14 @@ class TreeVisualizer:
         X_left, y_left = X[left_mask], y[left_mask]
         X_right, y_right = X[~left_mask], y[~left_mask]
         
-        self._draw_edges(ax, node.left, X_left, y_left, depth + 1)
-        self._draw_edges(ax, node.right, X_right, y_right, depth + 1)
+        self._draw_edges(ax, node.left, X_left, y_left, depth + 1, max_depth)
+        self._draw_edges(ax, node.right, X_right, y_right, depth + 1, max_depth)
     
-    def _draw_tree_recursive(self, ax, node, X, y, depth, fontsize):
+    def _draw_tree_recursive(self, ax, node, X, y, depth, fontsize, max_depth=None):
         if node is None:
+            return
+     
+        if max_depth is not None and depth > max_depth:
             return
         
         self._draw_node(ax, node, X, y, fontsize)
@@ -162,15 +164,15 @@ class TreeVisualizer:
             X_left, y_left = X[left_mask], y[left_mask]
             X_right, y_right = X[~left_mask], y[~left_mask]
             
-            self._draw_tree_recursive(ax, node.left, X_left, y_left, depth + 1, fontsize)
-            self._draw_tree_recursive(ax, node.right, X_right, y_right, depth + 1, fontsize)
+            self._draw_tree_recursive(ax, node.left, X_left, y_left, depth + 1, fontsize, max_depth)
+            self._draw_tree_recursive(ax, node.right, X_right, y_right, depth + 1, fontsize, max_depth)
     
     def plot_tree_graph(self, X, y, figsize=(24, 12), fontsize=7, max_depth=None):
         self.leaf_counter = 0
         self.node_positions = {}
         
         n_leaves = self._count_leaves(self.tree.tree_)
-        spacing = max(2.2, n_leaves / 8.0)
+        spacing = 25.0 
         
         self._assign_positions(self.tree.tree_, depth=0, pos_x=0, spacing=spacing)
         
@@ -178,8 +180,8 @@ class TreeVisualizer:
         ax.set_aspect('auto')
         ax.axis('off')
         
-        self._draw_edges(ax, self.tree.tree_, X, y)
-        self._draw_tree_recursive(ax, self.tree.tree_, X, y, 0, fontsize)
+        self._draw_edges(ax, self.tree.tree_, X, y, depth=0, max_depth=max_depth)
+        self._draw_tree_recursive(ax, self.tree.tree_, X, y, 0, fontsize, max_depth=max_depth)
         
         if self.node_positions:
             all_x = [pos[0] for pos in self.node_positions.values()]
