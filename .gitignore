@@ -7,7 +7,6 @@ __pycache__/
 venv/
 .venv/
 env/
-.env
 
 # --- Jupyter Notebooks ---
 .ipynb_checkpoints
@@ -30,6 +29,7 @@ Desktop.ini
 
 # --- IDE / Editor Settings ---
 # VS Code
-.vscode/
 # Pycharm
 .idea/
+config.bat
+node_modules
